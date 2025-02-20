@@ -1,4 +1,4 @@
-module logger
+module github.com/topiaco/logger
 
 go 1.23
 
