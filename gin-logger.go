@@ -44,7 +44,6 @@ var (
 	reset   = string([]byte{27, 91, 48, 109})
 )
 
-// set gin log
 func InitGinLogger() gin.HandlerFunc {
 	// 不需要记录日志的路由，如静态资源文件
 	notLoggerPath := []string{
