@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	gormlogger "gorm.io/gorm/logger"
@@ -31,9 +32,23 @@ func toLoggerLevel(level gormlogger.LogLevel) Level {
 
 // FromContext from context logger
 func (l *MysqlLogger) FromContext(ctx context.Context) Logger {
+	// 首先尝试从传入的context中获取req-id
 	if requestID, ok := ctx.Value(TraceID).(string); ok {
 		return l.WithField(TraceID, requestID)
 	}
+
+	// 如果context中没有req-id，尝试从Redis中获取
+	if RedisClient != nil {
+		// 获取当前协程ID
+		goroutineID := getGoroutineID()
+		redisKey := fmt.Sprintf("goroutine:%d", goroutineID)
+
+		// 从Redis中获取req-id
+		if requestID, err := RedisClient.Get(ctx, redisKey).Result(); err == nil {
+			return l.WithField(TraceID, requestID)
+		}
+	}
+
 	return l.Logger
 }
 

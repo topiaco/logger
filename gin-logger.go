@@ -3,14 +3,29 @@ package logger
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"net/http/httputil"
+	"runtime"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 )
+
+// getGoroutineID returns the current goroutine ID
+func getGoroutineID() uint64 {
+	b := make([]byte, 64)
+	b = b[:runtime.Stack(b, false)]
+	b = bytes.TrimPrefix(b, []byte("goroutine "))
+	b = b[:bytes.IndexByte(b, ' ')]
+	n := uint64(0)
+	for _, c := range b {
+		n = n*10 + uint64(c-'0')
+	}
+	return n
+}
 
 type bufferedWriter struct {
 	gin.ResponseWriter
@@ -49,6 +64,18 @@ func InitGinLogger() gin.HandlerFunc {
 			c.Header("req-id", xTraceId)
 		}
 		c.Request.Header.Set("req-id", xTraceId)
+
+		// 获取当前协程ID并存储context到Redis
+		goroutineID := getGoroutineID()
+		fmt.Println("Goroutine ID: ", goroutineID)
+		redisKey := fmt.Sprintf("goroutine:%d", goroutineID)
+
+		// 将context存入Redis，过期时间5分钟
+		if RedisClient != nil {
+			ctx := context.WithValue(c.Request.Context(), TraceID, xTraceId)
+			c.Request = c.Request.WithContext(ctx)
+			RedisClient.Set(c.Request.Context(), redisKey, xTraceId, 3*time.Minute)
+		}
 
 		Std = New(xTraceId).Caller(4)
 
@@ -90,6 +117,12 @@ func InitGinLogger() gin.HandlerFunc {
 		t := time.Now()
 
 		c.Next()
+
+		// 请求结束时清除Redis中的键值对
+		if RedisClient != nil {
+			RedisClient.Del(c.Request.Context(), redisKey)
+		}
+
 		username, _ := c.Get("username")
 		// 请求后
 		latency := time.Since(t)
