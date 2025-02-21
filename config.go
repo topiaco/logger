@@ -5,10 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/go-redis/redis"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
-
-var RedisClient interface{}
 
 // Config for logging
 type LoggerConf struct {
@@ -46,11 +45,10 @@ var loggerConf = &LoggerConf{
 }
 
 // SetConfig set logger config
-func SetConfig(cfg *LoggerConf, redisClient interface{}) {
+func SetConfig(cfg *LoggerConf, options *redis.Options) {
 	loggerConf = cfg
 
 	if loggerConf.FileLoggingEnabled {
-		RedisClient = redisClient
 		if loggerConf.Filename == "" {
 			name := filepath.Base(os.Args[0]) + "-fox.log"
 			loggerConf.Filename = filepath.Join(os.TempDir(), name)

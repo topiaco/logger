@@ -38,29 +38,15 @@ func (l *MysqlLogger) FromContext(ctx context.Context) Logger {
 	}
 
 	// 如果context中没有req-id，尝试从Redis中获取
-	if RedisClient != nil {
+	redisClient := NewRedisClient()
+	if redisClient != nil {
 		// 获取当前协程ID
 		goroutineID := getGoroutineID()
-		redisKey := fmt.Sprintf("goroutine:%d", goroutineID)
+		redisKey := fmt.Sprintf("logger_goroutine_:%d_reqid", goroutineID)
 
-		// 从Redis中获取req-id，使用类型断言处理不同的Redis客户端实现
-		switch client := RedisClient.(type) {
-		case interface {
-			Get(ctx context.Context, key string) interface {
-				Result() (string, error)
-			}
-		}:
-			if requestID, err := client.Get(ctx, redisKey).Result(); err == nil {
-				return l.WithField(TraceID, requestID)
-			}
-		case interface {
-			Get(ctx context.Context, key string) (string, error)
-		}:
-			if requestID, err := client.Get(ctx, redisKey); err == nil {
-				return l.WithField(TraceID, requestID)
-			}
-		default:
-			fmt.Printf("不支持的Redis客户端类型: %T\n", RedisClient)
+		// 从Redis中获取req-id
+		if requestID, err := redisClient.Get(redisKey).Result(); err == nil {
+			return l.WithField(TraceID, requestID)
 		}
 	}
 
