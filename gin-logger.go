@@ -73,7 +73,19 @@ func InitGinLogger() gin.HandlerFunc {
 		if RedisClient != nil {
 			ctx := context.WithValue(c.Request.Context(), TraceID, xTraceId)
 			c.Request = c.Request.WithContext(ctx)
-			RedisClient.Set(c.Request.Context(), redisKey, xTraceId, 3*time.Minute)
+			// 使用类型断言来处理不同的Redis客户端实现
+			switch client := RedisClient.(type) {
+			case interface {
+				Set(ctx context.Context, key string, value interface{}, expiration time.Duration) error
+			}:
+				_ = client.Set(ctx, redisKey, xTraceId, 3*time.Minute)
+			case interface {
+				Set(ctx context.Context, key string, value interface{}, expiration time.Duration)
+			}:
+				client.Set(ctx, redisKey, xTraceId, 3*time.Minute)
+			default:
+				fmt.Printf("不支持的Redis客户端类型: %T\n", RedisClient)
+			}
 		}
 
 		Std = New(xTraceId).Caller(4)
@@ -119,7 +131,19 @@ func InitGinLogger() gin.HandlerFunc {
 
 		// 请求结束时清除Redis中的键值对
 		if RedisClient != nil {
-			RedisClient.Del(c.Request.Context(), redisKey)
+			// 使用类型断言来处理不同的Redis客户端实现
+			switch client := RedisClient.(type) {
+			case interface {
+				Del(ctx context.Context, keys ...string) error
+			}:
+				_ = client.Del(c.Request.Context(), redisKey)
+			case interface {
+				Del(ctx context.Context, keys ...string)
+			}:
+				client.Del(c.Request.Context(), redisKey)
+			default:
+				fmt.Printf("不支持的Redis客户端类型: %T\n", RedisClient)
+			}
 		}
 
 		username, _ := c.Get("username")

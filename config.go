@@ -5,11 +5,10 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/redis/go-redis/v9"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 
-var RedisClient *redis.Client
+var RedisClient interface{}
 
 // Config for logging
 type LoggerConf struct {
@@ -47,7 +46,7 @@ var loggerConf = &LoggerConf{
 }
 
 // SetConfig set logger config
-func SetConfig(cfg *LoggerConf, redisClient *redis.Client) {
+func SetConfig(cfg *LoggerConf, redisClient interface{}) {
 	loggerConf = cfg
 
 	if loggerConf.FileLoggingEnabled {
