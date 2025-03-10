@@ -84,13 +84,14 @@ func InitGinLogger() gin.HandlerFunc {
 		params, _ := io.ReadAll(c.Request.Body)
 		reqBytes, _ := httputil.DumpRequest(c.Request, true)
 		reqLoggerFields := map[string]interface{}{
-			"guest": guest, // 身份标识
-			"ip":    c.ClientIP(),
+			"guest":      guest, // 身份标识
+			"clientIP":   c.ClientIP(),
+			"httpMethod": c.Request.Method,
+			"path":       c.Request.URL.Path,
 		}
 		WithFields(reqLoggerFields).Caller(3).Info(fmt.Sprintf(
-			"%s \n ****** params ******* \n %s\n ",
+			"%s \n ****** params ******* \n ",
 			string(reqBytes),
-			string(params[:300]),
 		))
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(params))
 		if c.Writer.Status() == 200 {
@@ -102,9 +103,11 @@ func InitGinLogger() gin.HandlerFunc {
 			defer func() {
 				response := newWriter.Buffer.Bytes()
 				reqLoggerFields := map[string]interface{}{
-					"Status":   c.Writer.Status(),
-					"guest":    guest, // 身份标识
-					"clientIP": c.ClientIP(),
+					"Status":     c.Writer.Status(),
+					"guest":      guest, // 身份标识
+					"clientIP":   c.ClientIP(),
+					"httpMethod": c.Request.Method,
+					"path":       c.Request.URL.Path,
 				}
 				if len(response) > 0 {
 					reqLoggerFields["Response"] = response
@@ -127,23 +130,23 @@ func InitGinLogger() gin.HandlerFunc {
 		// 请求后
 		latency := time.Since(t)
 		statusCode := c.Writer.Status()
-		statusColor := colorForStatus(statusCode)
+		// statusColor := colorForStatus(statusCode)
 		method := c.Request.Method
-		methodColor := colorForMethod(method)
+		// methodColor := colorForMethod(method)
 		comment := c.Errors.ByType(gin.ErrorTypePrivate).String()
 
 		resLoggerFields := map[string]interface{}{
-			"guest":    guest, // 身份标识
-			"clientIP": c.ClientIP(),
-			"comment":  comment,
-			"username": username,
+			"guest":      guest, // 身份标识
+			"clientIP":   c.ClientIP(),
+			"comment":    comment,
+			"username":   username,
+			"httpMethod": c.Request.Method,
+			"path":       c.Request.URL.Path,
 		}
-		WithFields(resLoggerFields).Caller(3).Info(fmt.Sprintf(
-			"|%s %s %s| |%s %3d %s||%s|",
-			methodColor, method, reset,
-			statusColor, statusCode, reset,
-			latency,
-		))
+		resLoggerFields["method"] = method
+		resLoggerFields["statusCode"] = statusCode
+		resLoggerFields["latency"] = latency.String()
+		WithFields(resLoggerFields).Caller(3).Info("Request completed")
 	}
 }
 

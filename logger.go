@@ -104,7 +104,7 @@ func newLogger(traceID ...string) Logger {
 		if loggerConf.EncodeLogsAsJSON {
 			writers = append(writers, os.Stderr)
 		} else {
-			writers = append(writers, zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: DefaultLogTimeFormat})
+			writers = append(writers, zerolog.ConsoleWriter{Out: os.Stderr, TimeFormat: DefaultLogTimeFormat, NoColor: true})
 		}
 	}
 
@@ -112,7 +112,7 @@ func newLogger(traceID ...string) Logger {
 		if loggerConf.EncodeLogsAsJSON {
 			writers = append(writers, loggerConf.RollingWrite)
 		} else {
-			writers = append(writers, zerolog.ConsoleWriter{Out: loggerConf.RollingWrite, TimeFormat: DefaultLogTimeFormat})
+			writers = append(writers, zerolog.ConsoleWriter{Out: loggerConf.RollingWrite, TimeFormat: DefaultLogTimeFormat, NoColor: true})
 		}
 	}
 
