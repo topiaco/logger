@@ -61,4 +61,6 @@ func SetConfig(cfg *LoggerConf, options *redis.Options) {
 			MaxAge:     cfg.MaxAge,
 		}
 	}
+
+	InitRedis(options)
 }
