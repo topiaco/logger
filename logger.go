@@ -93,6 +93,8 @@ var New func(traceID ...string) Logger = newLogger
 // newLogger return Logger
 func newLogger(traceID ...string) Logger {
 
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+
 	var trace string
 	if len(traceID) > 0 {
 		trace = traceID[0]
