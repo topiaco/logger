@@ -74,7 +74,7 @@ func InitGinLogger() gin.HandlerFunc {
 		if redisClient != nil {
 			ctx := context.WithValue(c.Request.Context(), TraceID, xTraceId)
 			c.Request = c.Request.WithContext(ctx)
-			redisClient.Set(redisKey, xTraceId, 3*time.Minute)
+			redisClient.Set(ctx, redisKey, xTraceId, 3*time.Minute)
 		}
 
 		Std = New(xTraceId).Caller(4)
@@ -123,7 +123,8 @@ func InitGinLogger() gin.HandlerFunc {
 
 		// 请求结束时清除Redis中的键值对
 		if redisClient != nil {
-			redisClient.Del(redisKey)
+			var ctx = context.Background()
+			redisClient.Del(ctx, redisKey)
 		}
 
 		username, _ := c.Get("username")

@@ -45,7 +45,7 @@ func (l *MysqlLogger) FromContext(ctx context.Context) Logger {
 		redisKey := fmt.Sprintf("logger_goroutine_:%d_reqid", goroutineID)
 
 		// 从Redis中获取req-id
-		if requestID, err := redisClient.Get(redisKey).Result(); err == nil {
+		if requestID, err := redisClient.Get(ctx, redisKey).Result(); err == nil {
 			return l.WithField(TraceID, requestID)
 		}
 	}

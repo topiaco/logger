@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 	"gopkg.in/natefinch/lumberjack.v2"
 )
 

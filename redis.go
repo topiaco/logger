@@ -1,7 +1,7 @@
 package logger
 
 import (
-	"github.com/go-redis/redis"
+	"github.com/redis/go-redis/v9"
 )
 
 var RedisDB *redis.Client

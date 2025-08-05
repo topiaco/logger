@@ -4,7 +4,7 @@ go 1.23
 
 require (
 	github.com/gin-gonic/gin v1.10.0
-	github.com/go-redis/redis v6.15.9+incompatible
+	github.com/redis/go-redis/v9 v9.11.0
 	github.com/rs/zerolog v1.33.0
 	gopkg.in/natefinch/lumberjack.v2 v2.2.1
 	gorm.io/gorm v1.25.12
