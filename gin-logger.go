@@ -12,6 +12,10 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+const (
+	maxResponseLength = 1024 // 限制最大1024字符
+)
+
 // getGoroutineID returns the current goroutine ID
 func getGoroutineID() uint64 {
 	b := make([]byte, 64)
@@ -67,8 +71,7 @@ func InitGinLogger() gin.HandlerFunc {
 			redisClient.Set(redisKey, xTraceId, 3*time.Minute)
 		}
 
-		Std = New(xTraceId).Caller(4)
-
+		l := New(xTraceId)
 		params, _ := io.ReadAll(c.Request.Body)
 		c.Request.Body = io.NopCloser(bytes.NewBuffer(params))
 
@@ -93,12 +96,18 @@ func InitGinLogger() gin.HandlerFunc {
 			dataLength = 0
 		}
 
+		responseContent := rbw.body.String()
+		if len(responseContent) > maxResponseLength {
+			responseContent = responseContent[:maxResponseLength] + "...[truncated]"
+		}
+
 		loggerFields := map[string]interface{}{
+			"type":       "request",
 			"statusCode": statusCode,
 			"httpMethod": c.Request.Method,
 			"path":       c.Request.URL.Path,
 			"params":     string(params),
-			"response":   rbw.body.String(),
+			"response":   responseContent,
 			"dataLength": dataLength,
 			"latency":    latency.String(),
 			"guest":      guest, // 身份标识
@@ -106,7 +115,12 @@ func InitGinLogger() gin.HandlerFunc {
 			"clientIP":   c.ClientIP(),
 		}
 
-		l := WithFields(loggerFields)
+		// 如果是 GET, 则 params 为 querystring
+		if c.Request.Method == "GET" {
+			loggerFields["params"] = c.Request.URL.Query().Encode()
+		}
+
+		l = l.WithFields(loggerFields)
 		if len(c.Errors) > 0 {
 			loggerFields["comment"] = c.Errors.ByType(gin.ErrorTypePrivate).String()
 			l.Error("request")
