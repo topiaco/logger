@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"time"
 
 	"github.com/rs/zerolog"
@@ -53,7 +54,7 @@ var (
 	DefaultLogLevel Level = TraceLevel
 
 	// DefaultLogTimeFormat default log time format
-	DefaultLogTimeFormat = "2006-01-02 15:04:05"
+	DefaultLogTimeFormat = "2006-01-02 15:04:05.000"
 )
 
 // Logger logger methods
@@ -93,7 +94,13 @@ var New func(traceID ...string) Logger = newLogger
 // newLogger return Logger
 func newLogger(traceID ...string) Logger {
 
-	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixMs
+	zerolog.TimeFieldFormat = DefaultLogTimeFormat
+
+	zerolog.CallerMarshalFunc = func(pc uintptr, file string, line int) string {
+		dir, fileName := filepath.Split(file)
+		dirName := filepath.Base(dir)
+		return fmt.Sprintf("%s/%s:%d", dirName, fileName, line)
+	}
 
 	var trace string
 	if len(traceID) > 0 {
@@ -120,14 +127,14 @@ func newLogger(traceID ...string) Logger {
 
 	mw := io.MultiWriter(writers...)
 
-	c := zerolog.New(mw).With().Timestamp().CallerWithSkipFrameCount(3)
+	c := zerolog.New(mw).With().Timestamp()
 
 	if trace != "" {
 		c = c.Str(TraceID, trace)
 	}
 
 	if loggerConf.LogLevel != 0 {
-		DefaultLogLevel = Level(loggerConf.LogLevel)
+		DefaultLogLevel = loggerConf.LogLevel
 	}
 
 	l := c.Logger().Level(zerolog.Level(DefaultLogLevel))
