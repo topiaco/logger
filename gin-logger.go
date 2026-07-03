@@ -72,8 +72,22 @@ func InitGinLogger() gin.HandlerFunc {
 		}
 
 		l := New(xTraceId)
-		params, _ := io.ReadAll(c.Request.Body)
-		c.Request.Body = io.NopCloser(bytes.NewBuffer(params))
+		
+		contentType := c.ContentType()
+		// 如果 ContentLength 超过 2MB，或者是未知的二进制类型，或者 ContentLength 未定义且为 POST 时可能包含大字节流数据，限制 Dump Body
+		isLargeOrBinary := c.Request.ContentLength > 2*1024*1024 ||
+			(c.Request.ContentLength <= 0 && c.Request.Method == "POST") ||
+			(!strings.Contains(contentType, "application/json") &&
+				!strings.Contains(contentType, "application/x-www-form-urlencoded") &&
+				!strings.Contains(contentType, "multipart/form-data"))
+
+		var params []byte
+		if isLargeOrBinary {
+			params = []byte("<binary or large body omitted>")
+		} else {
+			params, _ = io.ReadAll(c.Request.Body)
+			c.Request.Body = io.NopCloser(bytes.NewBuffer(params))
+		}
 
 		rbw := &responseBodyWriter{body: bytes.NewBufferString(""), ResponseWriter: c.Writer}
 		c.Writer = rbw
