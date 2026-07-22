@@ -57,6 +57,21 @@ var (
 	DefaultLogTimeFormat = "2006-01-02 15:04:05.000"
 )
 
+type ErrorHook func(level Level, message string, caller string, traceID string)
+
+var errorHooks []ErrorHook
+
+func RegisterErrorHook(hook ErrorHook) {
+	errorHooks = append(errorHooks, hook)
+}
+
+func invokeErrorHooks(level Level, message string, caller string, traceID string) {
+	for _, hook := range errorHooks {
+		hook(level, message, caller, traceID)
+	}
+}
+
+
 // Logger logger methods
 type Logger interface {
 	// STD log
@@ -169,7 +184,9 @@ func (l *Log) Warn(arguments ...interface{}) {
 
 // Error error level
 func (l *Log) Error(arguments ...interface{}) {
-	l.log.Error().Msg(fmt.Sprint(arguments...))
+	msg := fmt.Sprint(arguments...)
+	l.log.Error().Msg(msg)
+	invokeErrorHooks(ErrorLevel, msg, "", l.traceID)
 }
 
 // Fatal fatal level
@@ -199,7 +216,9 @@ func (l *Log) Warnf(format string, arguments ...interface{}) {
 
 // Errorf error format
 func (l *Log) Errorf(format string, arguments ...interface{}) {
-	l.log.Error().Msg(fmt.Sprintf(format, arguments...))
+	msg := fmt.Sprintf(format, arguments...)
+	l.log.Error().Msg(msg)
+	invokeErrorHooks(ErrorLevel, msg, "", l.traceID)
 }
 
 // Fatalf fatal format
