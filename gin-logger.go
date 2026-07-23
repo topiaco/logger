@@ -3,6 +3,7 @@ package logger
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"runtime"
@@ -37,6 +38,19 @@ type responseBodyWriter struct {
 func (r *responseBodyWriter) Write(b []byte) (int, error) {
 	r.body.Write(b)
 	return r.ResponseWriter.Write(b)
+}
+
+type errorResponse struct {
+	Message string `json:"message"`
+}
+
+// extractErrorMessage 从响应体中提取错误消息
+func extractErrorMessage(responseBody string) string {
+	var resp errorResponse
+	if err := json.Unmarshal([]byte(responseBody), &resp); err == nil && resp.Message != "" {
+		return resp.Message
+	}
+	return ""
 }
 
 func InitGinLogger() gin.HandlerFunc {
@@ -137,11 +151,21 @@ func InitGinLogger() gin.HandlerFunc {
 		l = l.WithFields(loggerFields)
 		if len(c.Errors) > 0 {
 			loggerFields["comment"] = c.Errors.ByType(gin.ErrorTypePrivate).String()
-			l.Error("request")
+			errMsg := extractErrorMessage(responseContent)
+			if errMsg != "" {
+				l.Error("request: " + errMsg)
+			} else {
+				l.Error("request")
+			}
 		} else {
 			switch {
 			case statusCode > 499:
-				l.Error("request")
+				errMsg := extractErrorMessage(responseContent)
+				if errMsg != "" {
+					l.Error("request: " + errMsg)
+				} else {
+					l.Error("request")
+				}
 			case statusCode > 399:
 				l.Warn("request")
 			default:
