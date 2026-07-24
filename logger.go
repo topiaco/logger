@@ -118,6 +118,8 @@ func newLogger(traceID ...string) Logger {
 		}
 	}
 
+	writers = append(writers, hookWriter{})
+
 	mw := io.MultiWriter(writers...)
 
 	c := zerolog.New(mw).With().Timestamp().CallerWithSkipFrameCount(3)
@@ -257,62 +259,62 @@ func (l *Log) TraceID() string {
 
 // Debug debug level
 func Debug(arguments ...interface{}) {
-	Std.Debug(arguments)
+	Std.Debug(arguments...)
 }
 
 // Info info level
 func Info(arguments ...interface{}) {
-	Std.Info(arguments)
+	Std.Info(arguments...)
 }
 
 // Warn warn level
 func Warn(arguments ...interface{}) {
-	Std.Warn(arguments)
+	Std.Warn(arguments...)
 }
 
 // Error error level
 func Error(arguments ...interface{}) {
-	Std.Error(arguments)
+	Std.Error(arguments...)
 }
 
 // Fatal fatal level
 func Fatal(arguments ...interface{}) {
-	Std.Fatal(arguments)
+	Std.Fatal(arguments...)
 }
 
 // Panic panic level
 func Panic(arguments ...interface{}) {
-	Std.Panic(arguments)
+	Std.Panic(arguments...)
 }
 
 // Debugf debug format
 func Debugf(format string, arguments ...interface{}) {
-	Std.Debug(format, arguments)
+	Std.Debugf(format, arguments...)
 }
 
 // Infof info format
 func Infof(format string, arguments ...interface{}) {
-	Std.Info(format, arguments)
+	Std.Infof(format, arguments...)
 }
 
 // Warnf warn format
 func Warnf(format string, arguments ...interface{}) {
-	Std.Warn(format, arguments)
+	Std.Warnf(format, arguments...)
 }
 
 // Errorf error format
 func Errorf(format string, arguments ...interface{}) {
-	Std.Error(format, arguments)
+	Std.Errorf(format, arguments...)
 }
 
 // Fatalf fatal format
 func Fatalf(format string, arguments ...interface{}) {
-	Std.Fatal(format, arguments)
+	Std.Fatalf(format, arguments...)
 }
 
 // Panicf panic format
 func Panicf(format string, arguments ...interface{}) {
-	Std.Panic(format, arguments)
+	Std.Panicf(format, arguments...)
 }
 
 // WithField add new field
