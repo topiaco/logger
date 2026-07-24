@@ -41,7 +41,9 @@ type LogEvent struct {
 type Hook interface {
 	// Name 返回 Hook 唯一名称，用于注册、去重和注销
 	Name() string
-	// Handle 处理单条日志事件；实现中不要再调用 logger，避免递归触发 Hook
+	// Handle 处理单条日志事件
+	// 注意：实现中不要调用 logger.Error、logger.Info 等方法，否则会再次触发 Hook 形成递归
+	// 处理失败时直接 return err，必要时使用标准库 log 或 os.Stderr 做兜底记录
 	Handle(ctx context.Context, event LogEvent) error
 }
 

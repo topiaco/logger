@@ -38,3 +38,10 @@ defer logger.ShutdownHooks(context.Background())
 ```
 
 By default, hooks receive `Error` and above, run asynchronously, and drop new events when the hook queue is full.
+
+### Hook development notes
+
+- Do not call `logger.Error`, `logger.Info`, or other logger package methods inside `Hook.Handle`, because that log will enter the hook pipeline again and may trigger recursive handling
+- Return the error directly from `Hook.Handle` when Redis, message push, or another sink fails
+- If a hook must record its own failure, use the standard library `log` package or write to `os.Stderr` instead of this logger package
+- Keep `Hook.Name()` unique in one process; duplicate names will be rejected by `RegisterHook`
