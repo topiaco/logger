@@ -148,14 +148,20 @@ func InitGinLogger() gin.HandlerFunc {
 			loggerFields["params"] = c.Request.URL.Query().Encode()
 		}
 
-		l = l.WithFields(loggerFields)
+		var ginErrors string
 		if len(c.Errors) > 0 {
-			loggerFields["comment"] = c.Errors.ByType(gin.ErrorTypePrivate).String()
-			errMsg := extractErrorMessage(responseContent)
-			if errMsg != "" {
-				l.Error("request: " + errMsg)
+			ginErrors = c.Errors.ByType(gin.ErrorTypePrivate).String()
+			loggerFields["errors"] = ginErrors
+		}
+
+		l = l.WithFields(loggerFields)
+
+		if len(c.Errors) > 0 {
+			respErrMsg := extractErrorMessage(responseContent)
+			if respErrMsg != "" {
+				l.Error("request: " + ginErrors + " | response: " + respErrMsg)
 			} else {
-				l.Error("request")
+				l.Error("request: " + ginErrors)
 			}
 		} else {
 			switch {
