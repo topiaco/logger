@@ -30,6 +30,18 @@ func RecoverPanic(fields map[string]interface{}) {
 	}
 }
 
+// GoSafe 启动带 panic 保护的后台 goroutine
+func GoSafe(name string, fields map[string]interface{}, fn func()) {
+	if fn == nil {
+		return
+	}
+
+	go func() {
+		defer RecoverPanic(buildGoSafeFields(name, fields))
+		fn()
+	}()
+}
+
 // buildPanicFields 合并业务字段、panic 内容、panic 类型和调用栈
 func buildPanicFields(recovered interface{}, fields map[string]interface{}) map[string]interface{} {
 	panicFields := make(map[string]interface{}, len(fields)+3)
@@ -42,4 +54,32 @@ func buildPanicFields(recovered interface{}, fields map[string]interface{}) map[
 	panicFields[StackField] = string(debug.Stack())
 
 	return panicFields
+}
+
+// buildGoSafeFields 补充后台任务统一字段
+func buildGoSafeFields(name string, fields map[string]interface{}) map[string]interface{} {
+	goFields := cloneMapFields(fields)
+	goFields["source"] = "goroutine"
+	if name != "" {
+		goFields["goroutine"] = name
+	}
+
+	return goFields
+}
+
+// cloneMapFields 复制日志字段，避免后续追加字段时修改调用方传入的 map
+func cloneMapFields(fields map[string]interface{}) map[string]interface{} {
+	cloned := make(map[string]interface{}, len(fields))
+	for key, value := range fields {
+		cloned[key] = value
+	}
+
+	return cloned
+}
+
+// mergeMapFields 将 src 字段覆盖合并到 dst
+func mergeMapFields(dst map[string]interface{}, src map[string]interface{}) {
+	for key, value := range src {
+		dst[key] = value
+	}
 }
