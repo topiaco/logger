@@ -53,6 +53,78 @@ defer logger.ShutdownHooks(context.Background())
 
 默认情况下，hook 只接收 `Error` 及以上等级的日志，异步执行，并且在 hook 队列满时丢弃新的事件，避免阻塞业务日志调用。
 
+### Redis Stream 事件契约（v1）
+
+`RedisStreamHook` 保留全部现有字段及其线上格式，只新增 `schema_version` 和 `event_id`。新记录使用 `schema_version = "1"`。旧版本写入的记录没有这两个字段，`DecodeRedisStreamEvent` 会将其识别为 legacy schema `"0"`，因此错误日志管理页面可以同时读取新旧数据。
+
+| 字段 | Redis 中的值 | 是否必需 | 错误日志管理页面用途 |
+| --- | --- | --- | --- |
+| `schema_version` | 字符串，当前为 `"1"` | 仅 v1 必需 | 选择对应的解码和展示逻辑；缺失时表示 legacy `"0"`。 |
+| `event_id` | UUID v4 字符串 | 仅 v1 必需 | 作为列表行、详情路由、选中状态和去重使用的稳定事件标识；同一个 `LogEvent` 分发给多个 Hook 时保持一致。 |
+| `time` | `2006-01-02 15:04:05` 格式的字符串 | 是 | 展示时间和时间范围筛选；继续保留现有的秒级精度及服务本地时间格式。 |
+| `level` | `error`、`panic` 等字符串 | 是 | 日志级别标签和筛选条件。 |
+| `message` | 字符串，可以为空 | 是 | 列表摘要和详情标题。 |
+| `trace_id` | 字符串，可以为空 | 是 | 链路搜索和关联事件跳转。 |
+| `caller` | 字符串，可以为空 | 是 | 展示源码调用位置。 |
+| `service` | 字符串 | 是 | 服务筛选和来源标识。 |
+| `fields` | 以字符串保存的 JSON 对象 | 是 | 业务字段列和可展开的结构化字段面板；旧记录中的 `null` 会解码为空对象。 |
+| `raw` | 以字符串保存的 JSON 对象 | 是 | 可展开的原始日志面板，并保留读取原始 zerolog 字段的向前兼容能力；旧记录中的 `null` 会解码为空对象。 |
+
+页面后端应在 Redis 数据边界使用公开解码器，不要重复实现字段转换：
+
+```go
+for _, message := range messages { // XRange/XRevRange/XRead 返回的 []redis.XMessage
+	logEvent, err := logger.DecodeRedisStreamEvent(message.Values)
+	if err != nil {
+		// 将记录标记为格式错误，或记录诊断信息后跳过
+		continue
+	}
+
+	rowID := logEvent.EventID
+	if rowID == "" {
+		rowID = message.ID // 仅供 legacy v0 数据兜底
+	}
+	_ = rowID
+	// logEvent.Fields 和 logEvent.Raw 已经是解码后的 map
+}
+```
+
+`DecodeRedisStreamEvent` 已包含契约校验。对于从其他缓存恢复或由应用自行构造的事件，也可以直接调用公开的 `ValidateRedisStreamEvent`。未知 schema 版本、错误的 UUID、时间格式不符、现有字段缺失、JSON 对象格式错误都会返回 error。
+
+Redis 的 `XMessage.ID` 应单独保留作为范围查询或分页游标；它是传输元数据，不是稳定的 `event_id`。页面渲染 HTML 时，应把所有日志字符串以及 `fields`/`raw` 中的值视为不可信输入并进行转义。
+
+### Hook 运行统计
+
+可以按名称读取单个 Hook 的线程安全统计快照：
+
+```go
+stats, ok := logger.GetHookStats(redisHook.Name())
+if ok {
+	fmt.Printf("hook=%s dispatched=%d processed=%d dropped=%d failed=%d\n",
+		stats.Name,
+		stats.Dispatched,
+		stats.Processed,
+		stats.Dropped,
+		stats.Failed,
+	)
+}
+```
+
+也可以一次读取全部 Hook，结果按名称排序，适合接到监控或健康检查接口：
+
+```go
+for _, stats := range logger.ListHookStats() {
+	// export stats to Prometheus, OpenTelemetry, or another metrics system
+}
+```
+
+- `Dispatched`：成功进入该 Hook 异步队列的事件数
+- `Processed`：`Handle` 已返回的事件数，包含成功和失败
+- `Dropped`：因为队列已满而丢弃的事件数
+- `Failed`：`Handle` 返回错误或超过 `WithTimeout` 处理时限的事件数
+
+统计读取不会阻塞日志投递。`UnregisterHook` 或 `ShutdownHooks` 返回后仍可读取最后的统计快照；正常 Shutdown 会先排空队列，因此可以在关闭后读取最终值。如果 Shutdown 自身的 context 先超时，尚未结束的 worker 可能继续更新计数。使用同一名称重新注册 Hook 时，该名称的统计会从零开始。
+
 ## PMS/TMS 接入步骤
 
 下面以 pms-server 当前代码结构为例说明接入方式。依赖方 import 路径仍然是 `github.com/topiaco/logger`，升级到包含 hook/panic API 的 logger 版本后，按下面几个入口接入即可。tms-server 接入方式一致，只需要替换服务名和 Redis Stream 名称。

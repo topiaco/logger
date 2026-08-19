@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -81,6 +82,12 @@ func (h *RedisStreamHook) Name() string {
 
 // Handle 将单条 LogEvent 写入 Redis Stream
 func (h *RedisStreamHook) Handle(ctx context.Context, event LogEvent) error {
+	if event.EventID == "" {
+		event.EventID = newLogEventID()
+	}
+	if !isUUIDV4(event.EventID) {
+		return fmt.Errorf("logger: invalid redis stream event_id %q: must be a UUID v4", event.EventID)
+	}
 	return h.client.XAdd(ctx, h.xAddArgs(event)).Err()
 }
 
@@ -100,14 +107,16 @@ func (h *RedisStreamHook) xAddValues(event LogEvent) map[string]interface{} {
 	raw := mustMarshalString(event.Raw)
 
 	return map[string]interface{}{
-		"time":     event.Time.Format(DefaultLogTimeFormat),
-		"level":    event.LevelName,
-		"message":  event.Message,
-		"trace_id": event.TraceID,
-		"caller":   event.Caller,
-		"service":  h.service,
-		"fields":   fields,
-		"raw":      raw,
+		"schema_version": RedisStreamEventSchemaVersion,
+		"event_id":       event.EventID,
+		"time":           event.Time.Format(DefaultLogTimeFormat),
+		"level":          event.LevelName,
+		"message":        event.Message,
+		"trace_id":       event.TraceID,
+		"caller":         event.Caller,
+		"service":        h.service,
+		"fields":         fields,
+		"raw":            raw,
 	}
 }
 
@@ -119,6 +128,9 @@ func mustMarshalString(value interface{}) string {
 
 	b, err := json.Marshal(value)
 	if err != nil {
+		return "{}"
+	}
+	if string(b) == "null" {
 		return "{}"
 	}
 

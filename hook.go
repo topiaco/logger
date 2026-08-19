@@ -7,7 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -21,6 +23,8 @@ const (
 // LogEvent 表示一次已经写出的结构化日志事件，会被分发给已注册的 Hook
 type LogEvent struct {
 	Time time.Time `json:"time"` // Time 是日志产生时间
+	// EventID 是一次日志事件的稳定 UUID；同一事件分发给多个 Hook 时保持不变
+	EventID string `json:"event_id,omitempty"`
 	// Level 是 logger 包内定义的日志等级
 	Level Level `json:"level"`
 	// LevelName 是 zerolog 原始等级名称，例如 error、warn、info
@@ -45,6 +49,42 @@ type Hook interface {
 	// 注意：实现中不要调用 logger.Error、logger.Info 等方法，否则会再次触发 Hook 形成递归
 	// 处理失败时直接 return err，必要时使用标准库 log 或 os.Stderr 做兜底记录
 	Handle(ctx context.Context, event LogEvent) error
+}
+
+// HookStats 是单个 Hook 自本次注册以来的运行统计快照
+//
+// Hook 注销或 ShutdownHooks 返回后，最后一次注册产生的统计仍可查询；
+// 使用相同名称再次注册 Hook 时，计数会从零开始。
+type HookStats struct {
+	// Name 是 Hook 注册名称
+	Name string `json:"name"`
+	// Dispatched 是成功进入异步队列的事件数
+	Dispatched uint64 `json:"dispatched"`
+	// Processed 是 Handle 已返回的事件数，包含成功和失败
+	Processed uint64 `json:"processed"`
+	// Dropped 是因为异步队列已满而丢弃的事件数
+	Dropped uint64 `json:"dropped"`
+	// Failed 是 Handle 返回错误或超过处理超时时间的事件数
+	Failed uint64 `json:"failed"`
+}
+
+// hookStatsCounters 保存 worker 内部使用的原子计数器
+type hookStatsCounters struct {
+	dispatched atomic.Uint64
+	processed  atomic.Uint64
+	dropped    atomic.Uint64
+	failed     atomic.Uint64
+}
+
+// snapshot 返回当前计数器的线程安全快照
+func (s *hookStatsCounters) snapshot(name string) HookStats {
+	return HookStats{
+		Name:       name,
+		Dispatched: s.dispatched.Load(),
+		Processed:  s.processed.Load(),
+		Dropped:    s.dropped.Load(),
+		Failed:     s.failed.Load(),
+	}
 }
 
 // hookConfig 保存单个 Hook 的分发配置
@@ -93,22 +133,25 @@ func defaultHookConfig() hookConfig {
 
 // hookWorker 持有一个 Hook 及其独立的异步消费队列
 type hookWorker struct {
-	hook Hook
-	cfg  hookConfig
-	ch   chan LogEvent
-	done chan struct{}
+	hook  Hook
+	cfg   hookConfig
+	ch    chan LogEvent
+	done  chan struct{}
+	stats *hookStatsCounters
 }
 
 // hookDispatcher 管理所有已注册的 Hook worker
 type hookDispatcher struct {
 	mu      sync.RWMutex
 	workers map[string]*hookWorker
+	stats   map[string]*hookStatsCounters
 }
 
 // newHookDispatcher 创建一个空的 Hook 分发器
 func newHookDispatcher() *hookDispatcher {
 	return &hookDispatcher{
 		workers: make(map[string]*hookWorker),
+		stats:   make(map[string]*hookStatsCounters),
 	}
 }
 
@@ -129,6 +172,20 @@ func ShutdownHooks(ctx context.Context) error {
 	return globalHookDispatcher.shutdown(ctx)
 }
 
+// GetHookStats 返回指定 Hook 最后一次注册产生的运行统计快照
+//
+// Hook 注销或 ShutdownHooks 返回后仍可查询最终统计。名称从未注册过时 ok 为 false。
+func GetHookStats(name string) (stats HookStats, ok bool) {
+	return globalHookDispatcher.getStats(name)
+}
+
+// ListHookStats 返回所有曾注册 Hook 的运行统计快照，并按名称排序
+//
+// 同一名称多次注册时只返回最近一次注册产生的统计。
+func ListHookStats() []HookStats {
+	return globalHookDispatcher.listStats()
+}
+
 // register 校验并注册单个 Hook，同时启动它的异步 worker
 func (d *hookDispatcher) register(h Hook, opts ...HookOption) error {
 	if h == nil {
@@ -147,11 +204,13 @@ func (d *hookDispatcher) register(h Hook, opts ...HookOption) error {
 		}
 	}
 
+	stats := &hookStatsCounters{}
 	worker := &hookWorker{
-		hook: h,
-		cfg:  cfg,
-		ch:   make(chan LogEvent, cfg.queueSize),
-		done: make(chan struct{}),
+		hook:  h,
+		cfg:   cfg,
+		ch:    make(chan LogEvent, cfg.queueSize),
+		done:  make(chan struct{}),
+		stats: stats,
 	}
 
 	d.mu.Lock()
@@ -162,6 +221,7 @@ func (d *hookDispatcher) register(h Hook, opts ...HookOption) error {
 	}
 
 	d.workers[name] = worker
+	d.stats[name] = stats
 	go worker.run()
 
 	return nil
@@ -214,6 +274,33 @@ func (d *hookDispatcher) hasWorkers() bool {
 	return len(d.workers) > 0
 }
 
+// getStats 返回指定名称最后一次注册产生的统计快照
+func (d *hookDispatcher) getStats(name string) (HookStats, bool) {
+	d.mu.RLock()
+	stats, ok := d.stats[name]
+	d.mu.RUnlock()
+	if !ok {
+		return HookStats{}, false
+	}
+
+	return stats.snapshot(name), true
+}
+
+// listStats 返回全部 Hook 统计快照，按名称排序以保持结果稳定
+func (d *hookDispatcher) listStats() []HookStats {
+	d.mu.RLock()
+	result := make([]HookStats, 0, len(d.stats))
+	for name, stats := range d.stats {
+		result = append(result, stats.snapshot(name))
+	}
+	d.mu.RUnlock()
+
+	sort.Slice(result, func(i, j int) bool {
+		return result[i].Name < result[j].Name
+	})
+	return result
+}
+
 // dispatch 按日志等级把事件投递给匹配的 Hook，队列满时直接丢弃新事件
 func (d *hookDispatcher) dispatch(event LogEvent) {
 	d.mu.RLock()
@@ -226,8 +313,10 @@ func (d *hookDispatcher) dispatch(event LogEvent) {
 
 		select {
 		case worker.ch <- event:
+			worker.stats.dispatched.Add(1)
 		default:
 			// 队列满说明下游处理偏慢，丢弃新事件以保护业务日志调用不被阻塞
+			worker.stats.dropped.Add(1)
 		}
 	}
 }
@@ -243,8 +332,14 @@ func (w *hookWorker) run() {
 			ctx, cancel = context.WithTimeout(ctx, w.cfg.timeout)
 		}
 
-		_ = w.hook.Handle(ctx, event)
+		err := w.hook.Handle(ctx, event)
+		timedOut := errors.Is(ctx.Err(), context.DeadlineExceeded)
 		cancel()
+
+		w.stats.processed.Add(1)
+		if err != nil || timedOut {
+			w.stats.failed.Add(1)
+		}
 	}
 }
 
@@ -279,6 +374,7 @@ func parseLogEvent(p []byte) (LogEvent, error) {
 
 	event := LogEvent{
 		Time:      parseEventTime(raw["time"]),
+		EventID:   newLogEventID(),
 		LevelName: valueToString(raw["level"]),
 		Message:   valueToString(raw["message"]),
 		TraceID:   valueToString(raw[TraceID]),

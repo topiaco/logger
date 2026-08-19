@@ -2,6 +2,7 @@ package logger
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -26,6 +27,31 @@ func (h *captureHook) Handle(ctx context.Context, event LogEvent) error {
 		return ctx.Err()
 	}
 	return nil
+}
+
+type funcHook struct {
+	name   string
+	handle func(context.Context, LogEvent) error
+}
+
+func (h *funcHook) Name() string {
+	return h.name
+}
+
+func (h *funcHook) Handle(ctx context.Context, event LogEvent) error {
+	return h.handle(ctx, event)
+}
+
+func requireHookStats(t *testing.T, name string, want HookStats) {
+	t.Helper()
+
+	got, ok := GetHookStats(name)
+	if !ok {
+		t.Fatalf("GetHookStats(%q) ok = false, want true", name)
+	}
+	if got != want {
+		t.Fatalf("GetHookStats(%q) = %+v, want %+v", name, got, want)
+	}
 }
 
 func withTestLoggerConfig(t *testing.T) {
@@ -145,19 +171,206 @@ func TestHookDispatchDropsWhenQueueIsFull(t *testing.T) {
 
 	globalHookDispatcher.dispatch(event)
 
-	done := make(chan struct{})
+	dispatchDone := make(chan struct{})
 	go func() {
 		globalHookDispatcher.dispatch(event)
-		close(done)
+		close(dispatchDone)
 	}()
 
 	select {
-	case <-done:
+	case <-dispatchDone:
 	case <-time.After(50 * time.Millisecond):
 		t.Fatal("dispatch blocked when queue was full")
 	}
 
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 2,
+		Dropped:    1,
+	})
+
 	close(hook.release)
+	if err := ShutdownHooks(context.Background()); err != nil {
+		t.Fatalf("ShutdownHooks() error = %v", err)
+	}
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 2,
+		Processed:  2,
+		Dropped:    1,
+	})
+}
+
+func TestHookStatsCountsHandleFailure(t *testing.T) {
+	withTestLoggerConfig(t)
+
+	hook := &funcHook{
+		name: "failure",
+		handle: func(context.Context, LogEvent) error {
+			return errors.New("sink unavailable")
+		},
+	}
+	if err := RegisterHook(hook, WithTimeout(time.Second)); err != nil {
+		t.Fatalf("RegisterHook() error = %v", err)
+	}
+
+	globalHookDispatcher.dispatch(LogEvent{Level: ErrorLevel})
+	if err := ShutdownHooks(context.Background()); err != nil {
+		t.Fatalf("ShutdownHooks() error = %v", err)
+	}
+
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 1,
+		Processed:  1,
+		Failed:     1,
+	})
+}
+
+func TestHookStatsCountsTimeoutAsFailure(t *testing.T) {
+	withTestLoggerConfig(t)
+
+	hook := &funcHook{
+		name: "timeout",
+		handle: func(ctx context.Context, _ LogEvent) error {
+			<-ctx.Done()
+			return nil
+		},
+	}
+	if err := RegisterHook(hook, WithTimeout(20*time.Millisecond)); err != nil {
+		t.Fatalf("RegisterHook() error = %v", err)
+	}
+
+	globalHookDispatcher.dispatch(LogEvent{Level: ErrorLevel})
+	if err := ShutdownHooks(context.Background()); err != nil {
+		t.Fatalf("ShutdownHooks() error = %v", err)
+	}
+
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 1,
+		Processed:  1,
+		Failed:     1,
+	})
+}
+
+func TestShutdownHooksDrainsQueueAndKeepsFinalStats(t *testing.T) {
+	withTestLoggerConfig(t)
+
+	hook := &funcHook{
+		name: "shutdown-drain",
+		handle: func(context.Context, LogEvent) error {
+			return nil
+		},
+	}
+	if err := RegisterHook(hook, WithQueueSize(8), WithTimeout(time.Second)); err != nil {
+		t.Fatalf("RegisterHook() error = %v", err)
+	}
+
+	for i := 0; i < 5; i++ {
+		globalHookDispatcher.dispatch(LogEvent{Level: ErrorLevel})
+	}
+	if err := ShutdownHooks(context.Background()); err != nil {
+		t.Fatalf("ShutdownHooks() error = %v", err)
+	}
+
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 5,
+		Processed:  5,
+	})
+}
+
+func TestShutdownHooksHonorsContextDeadline(t *testing.T) {
+	withTestLoggerConfig(t)
+
+	started := make(chan struct{})
+	release := make(chan struct{})
+	hook := &funcHook{
+		name: "shutdown-timeout",
+		handle: func(context.Context, LogEvent) error {
+			close(started)
+			<-release
+			return nil
+		},
+	}
+	if err := RegisterHook(hook, WithTimeout(time.Second)); err != nil {
+		t.Fatalf("RegisterHook() error = %v", err)
+	}
+
+	globalHookDispatcher.dispatch(LogEvent{Level: ErrorLevel})
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for hook to start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	err := ShutdownHooks(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("ShutdownHooks() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: 1,
+	})
+
+	close(release)
+	deadline := time.Now().Add(time.Second)
+	for {
+		stats, ok := GetHookStats(hook.Name())
+		if ok && stats.Processed == 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for hook to finish after ShutdownHooks deadline")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestHookStatsAreSafeDuringConcurrentDispatch(t *testing.T) {
+	withTestLoggerConfig(t)
+
+	hook := &funcHook{
+		name: "concurrent-stats",
+		handle: func(context.Context, LogEvent) error {
+			return nil
+		},
+	}
+	if err := RegisterHook(hook, WithQueueSize(1024), WithTimeout(time.Second)); err != nil {
+		t.Fatalf("RegisterHook() error = %v", err)
+	}
+
+	const eventCount = 500
+	dispatched := make(chan struct{})
+	go func() {
+		defer close(dispatched)
+		for i := 0; i < eventCount; i++ {
+			globalHookDispatcher.dispatch(LogEvent{Level: ErrorLevel})
+		}
+	}()
+
+	for {
+		_, _ = GetHookStats(hook.Name())
+		_ = ListHookStats()
+		select {
+		case <-dispatched:
+			goto dispatchComplete
+		default:
+		}
+	}
+
+dispatchComplete:
+	if err := ShutdownHooks(context.Background()); err != nil {
+		t.Fatalf("ShutdownHooks() error = %v", err)
+	}
+	requireHookStats(t, hook.Name(), HookStats{
+		Name:       hook.Name(),
+		Dispatched: eventCount,
+		Processed:  eventCount,
+	})
 }
 
 func TestUnregisterHookStopsDispatch(t *testing.T) {

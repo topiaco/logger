@@ -55,6 +55,7 @@ func TestRedisStreamHookHandleWritesXAdd(t *testing.T) {
 
 	event := LogEvent{
 		Time:      time.Date(2026, 7, 24, 10, 30, 0, 0, time.Local),
+		EventID:   "123e4567-e89b-42d3-a456-426614174000",
 		Level:     ErrorLevel,
 		LevelName: "error",
 		Message:   "failed to save",
@@ -91,8 +92,26 @@ func TestRedisStreamHookHandleWritesXAdd(t *testing.T) {
 	if !ok {
 		t.Fatalf("Values type = %T, want map[string]interface{}", args.Values)
 	}
+	wantFields := []string{
+		"schema_version", "event_id", "time", "level", "message",
+		"trace_id", "caller", "service", "fields", "raw",
+	}
+	if len(values) != len(wantFields) {
+		t.Fatalf("field count = %d, want %d: %v", len(values), len(wantFields), values)
+	}
+	for _, field := range wantFields {
+		if _, exists := values[field]; !exists {
+			t.Fatalf("field %q is missing from XADD values", field)
+		}
+	}
 	if values["service"] != "pms-server" {
 		t.Fatalf("service = %v, want pms-server", values["service"])
+	}
+	if values["schema_version"] != RedisStreamEventSchemaVersion {
+		t.Fatalf("schema_version = %v, want %s", values["schema_version"], RedisStreamEventSchemaVersion)
+	}
+	if values["event_id"] != event.EventID {
+		t.Fatalf("event_id = %v, want %s", values["event_id"], event.EventID)
 	}
 	if values["level"] != "error" {
 		t.Fatalf("level = %v, want error", values["level"])
@@ -113,5 +132,51 @@ func TestRedisStreamHookHandleWritesXAdd(t *testing.T) {
 	}
 	if raw["message"] != "failed to save" {
 		t.Fatalf("raw[message] = %v, want failed to save", raw["message"])
+	}
+}
+
+func TestRedisStreamHookHandleGeneratesEventID(t *testing.T) {
+	client := &fakeRedisStreamClient{}
+	hook, err := NewRedisStreamHook(client, RedisStreamHookConfig{Service: "pms-server"})
+	if err != nil {
+		t.Fatalf("NewRedisStreamHook() error = %v", err)
+	}
+
+	event := LogEvent{
+		Time:      time.Date(2026, 7, 24, 10, 30, 0, 0, time.Local),
+		LevelName: "error",
+		Message:   "failed to save",
+	}
+	if err := hook.Handle(context.Background(), event); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	values := client.args.Values.(map[string]interface{})
+	eventID, ok := values["event_id"].(string)
+	if !ok || !isUUIDV4(eventID) {
+		t.Fatalf("event_id = %v, want UUID v4", values["event_id"])
+	}
+	if _, err := DecodeRedisStreamEvent(values); err != nil {
+		t.Fatalf("DecodeRedisStreamEvent() error = %v", err)
+	}
+}
+
+func TestRedisStreamHookRejectsInvalidEventID(t *testing.T) {
+	client := &fakeRedisStreamClient{}
+	hook, err := NewRedisStreamHook(client, RedisStreamHookConfig{Service: "pms-server"})
+	if err != nil {
+		t.Fatalf("NewRedisStreamHook() error = %v", err)
+	}
+
+	err = hook.Handle(context.Background(), LogEvent{
+		Time:      time.Date(2026, 7, 24, 10, 30, 0, 0, time.Local),
+		EventID:   "not-a-uuid",
+		LevelName: "error",
+	})
+	if err == nil {
+		t.Fatal("Handle() error = nil, want invalid event_id error")
+	}
+	if client.args != nil {
+		t.Fatal("XAdd was called for an invalid event_id")
 	}
 }

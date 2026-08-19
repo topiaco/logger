@@ -53,6 +53,78 @@ defer logger.ShutdownHooks(context.Background())
 
 By default, hooks receive `Error` and above, run asynchronously, and drop new events when the hook queue is full.
 
+### Redis Stream event contract (v1)
+
+`RedisStreamHook` keeps all existing fields and their wire formats, and adds `schema_version` and `event_id`. New records use `schema_version = "1"`. Records written by earlier versions do not contain either new field; `DecodeRedisStreamEvent` treats them as legacy schema `"0"` so an error-log management page can read old and new records together.
+
+| Field | Redis value | Required | Error-log management page usage |
+| --- | --- | --- | --- |
+| `schema_version` | String; currently `"1"` | v1 only | Select the decoding/rendering behavior. Missing means legacy `"0"`. |
+| `event_id` | UUID v4 string | v1 only | Stable event key for row identity, detail routes, selection, and deduplication. It remains the same when one `LogEvent` is sent to multiple hooks. |
+| `time` | String in `2006-01-02 15:04:05` format | Yes | Display time and time-range filtering. This preserves the existing second-precision, service-local-time format. |
+| `level` | String such as `error` or `panic` | Yes | Severity badge and filter. |
+| `message` | String; may be empty | Yes | List summary and detail title. |
+| `trace_id` | String; may be empty | Yes | Trace search and links to related events. |
+| `caller` | String; may be empty | Yes | Source-location display. |
+| `service` | String | Yes | Service filter and source label. |
+| `fields` | JSON object encoded as a string | Yes | Structured business columns and the expandable field panel. A legacy `null` value is decoded as an empty object. |
+| `raw` | JSON object encoded as a string | Yes | Expandable raw-log panel and forward-compatible access to original zerolog fields. A legacy `null` value is decoded as an empty object. |
+
+Use the public decoder at the Redis boundary instead of duplicating conversions in the page backend:
+
+```go
+for _, message := range messages { // []redis.XMessage returned by XRange/XRevRange/XRead
+	logEvent, err := logger.DecodeRedisStreamEvent(message.Values)
+	if err != nil {
+		// mark the record malformed or skip it with a diagnostic
+		continue
+	}
+
+	rowID := logEvent.EventID
+	if rowID == "" {
+		rowID = message.ID // legacy v0 fallback only
+	}
+	_ = rowID
+	// logEvent.Fields and logEvent.Raw are already decoded maps
+}
+```
+
+`DecodeRedisStreamEvent` includes contract validation. `ValidateRedisStreamEvent` is also public for events restored from another cache or constructed by application code. Unknown schema versions, malformed UUIDs, invalid timestamps, missing existing fields, and invalid JSON objects return an error.
+
+Keep the Redis `XMessage.ID` separately as the range/pagination cursor; it is transport metadata and is not the stable `event_id`. Treat all log strings and values inside `fields`/`raw` as untrusted when rendering them in HTML.
+
+### Hook runtime statistics
+
+Read a thread-safe statistics snapshot for one hook by name:
+
+```go
+stats, ok := logger.GetHookStats(redisHook.Name())
+if ok {
+	fmt.Printf("hook=%s dispatched=%d processed=%d dropped=%d failed=%d\n",
+		stats.Name,
+		stats.Dispatched,
+		stats.Processed,
+		stats.Dropped,
+		stats.Failed,
+	)
+}
+```
+
+Read every hook at once, sorted by name, for a metrics or health endpoint:
+
+```go
+for _, stats := range logger.ListHookStats() {
+	// export stats to Prometheus, OpenTelemetry, or another metrics system
+}
+```
+
+- `Dispatched`: events successfully added to this hook's async queue
+- `Processed`: events for which `Handle` has returned, including successes and failures
+- `Dropped`: events discarded because the queue was full
+- `Failed`: events whose `Handle` returned an error or exceeded the `WithTimeout` processing deadline
+
+Reading statistics does not block log dispatch. The last snapshot remains available after `UnregisterHook` or `ShutdownHooks` returns. A successful shutdown drains the queue first, so the post-shutdown snapshot contains the final counts. If the shutdown context expires first, unfinished workers may continue updating their counts. Registering the same hook name again resets that name's statistics.
+
 ## PMS/TMS Integration Guide
 
 The following guide uses the current pms-server structure as the example. The import path remains `github.com/topiaco/logger`; after upgrading to a logger version that contains hook and panic APIs, update the following application entry points. tms-server follows the same steps and only needs different service and Redis Stream names.
